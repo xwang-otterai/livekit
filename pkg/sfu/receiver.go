@@ -15,6 +15,7 @@
 package sfu
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"go.uber.org/atomic"
 
+	"github.com/livekit/mediatransportutil"
 	"github.com/livekit/mediatransportutil/pkg/bucket"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -813,9 +815,22 @@ func (w *WebRTCReceiver) forwardRTP(layer int32, buff *buffer.Buffer) {
 			writeCount += rt.(REDTransformer).ForwardRTP(pkt, spatialLayer)
 		}
 
-		// track delay/jitter
+		// track delay/jitter and capture latency
 		if writeCount > 0 && w.forwardStats != nil {
-			w.forwardStats.Update(pkt.Arrival, time.Now().UnixNano())
+			capture := int64(0)
+			if pkt.AbsCaptureTimeExt != nil {
+				if srData := buff.GetSenderReportData(); srData != nil {
+					offset := rtpstats.RTCPSenderReportPropagationDelay(srData, false)
+					actCopy := *pkt.AbsCaptureTimeExt
+					if err := actCopy.Rewrite(offset); err == nil {
+						if bytes, err := actCopy.Marshal(); err == nil && len(bytes) >= 8 {
+							ts := binary.BigEndian.Uint64(bytes[:8])
+							capture = mediatransportutil.NtpTime(ts).Time().UnixNano()
+						}
+					}
+				}
+			}
+			w.forwardStats.Update(pkt.Arrival, time.Now().UnixNano(), capture)
 		}
 
 		// track video layers
